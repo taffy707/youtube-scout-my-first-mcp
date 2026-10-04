@@ -160,7 +160,8 @@ class YouTubeClient:
         cid = info["channel_id"]
         prior = self._store.get_channel(ChannelRef("id", cid))
         # Only trust "newest first, stop at first known ID" if the previous pass completed.
-        stop_at_known = bool(prior and prior["fully_indexed"])
+        # refresh=True always does a full pass, as an escape hatch.
+        stop_at_known = bool(prior and prior["fully_indexed"]) and not refresh
         self._store.upsert_channel(cid, info["handle"], info["title"], info["uploads_playlist"],
                                    prior["indexed_at"] if prior else None, fully_indexed=False)
 
@@ -177,5 +178,5 @@ class YouTubeClient:
         videos = self._fetch_videos([video_id])
         if not videos:
             return None
-        self._store.upsert_videos(videos)
+        self._store.upsert_videos(videos, listed=False)
         return videos[0]

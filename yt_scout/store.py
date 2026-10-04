@@ -26,7 +26,8 @@ CREATE TABLE IF NOT EXISTS videos (
     duration_s INTEGER NOT NULL DEFAULT 0,
     view_count INTEGER NOT NULL DEFAULT 0,
     thumbnail_url TEXT,
-    chapters_json TEXT NOT NULL DEFAULT '[]'
+    chapters_json TEXT NOT NULL DEFAULT '[]',
+    listed INTEGER NOT NULL DEFAULT 0  -- 1 once seen in the channel's uploads playlist
 );
 CREATE INDEX IF NOT EXISTS videos_channel ON videos(channel_id);
 CREATE VIRTUAL TABLE IF NOT EXISTS videos_fts USING fts5(
@@ -95,6 +96,9 @@ class Store:
             if path != ":memory:":
                 self._conn.execute("PRAGMA journal_mode=WAL")
             self._conn.executescript(_SCHEMA)
+            columns = {r["name"] for r in self._conn.execute("PRAGMA table_info(videos)")}
+            if "listed" not in columns:  # databases created before the column existed
+                self._conn.execute("ALTER TABLE videos ADD COLUMN listed INTEGER NOT NULL DEFAULT 0")
             self._conn.commit()
 
     def _one(self, sql: str, params=()) -> sqlite3.Row | None:
@@ -132,22 +136,24 @@ class Store:
         return {**dict(row), "fully_indexed": bool(row["fully_indexed"])}
 
     # --- videos ---------------------------------------------------------
-    def upsert_videos(self, videos: list[dict]) -> None:
+    def upsert_videos(self, videos: list[dict], listed: bool = True) -> None:
+        """listed=False for videos fetched one-off (not seen in the uploads playlist)."""
         with self._lock, self._conn:
             for v in videos:
                 self._conn.execute(
                     """INSERT INTO videos (video_id, channel_id, title, description, tags_json, published_at,
-                                           duration_s, view_count, thumbnail_url, chapters_json)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                           duration_s, view_count, thumbnail_url, chapters_json, listed)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                        ON CONFLICT(video_id) DO UPDATE SET
                          channel_id = excluded.channel_id, title = excluded.title,
                          description = excluded.description, tags_json = excluded.tags_json,
                          published_at = excluded.published_at, duration_s = excluded.duration_s,
                          view_count = excluded.view_count, thumbnail_url = excluded.thumbnail_url,
-                         chapters_json = excluded.chapters_json""",
+                         chapters_json = excluded.chapters_json,
+                         listed = MAX(videos.listed, excluded.listed)""",
                     (v["video_id"], v["channel_id"], v["title"], v["description"], json.dumps(v["tags"]),
                      v["published_at"], v["duration_s"], v["view_count"], v["thumbnail_url"],
-                     json.dumps(v["chapters"])),
+                     json.dumps(v["chapters"]), int(listed)),
                 )
                 self._conn.execute("DELETE FROM videos_fts WHERE video_id = ?", (v["video_id"],))
                 self._conn.execute(
@@ -160,7 +166,9 @@ class Store:
         return _video_from_row(row) if row else None
 
     def known_video_ids(self, channel_id: str) -> set[str]:
-        return {r["video_id"] for r in self._all("SELECT video_id FROM videos WHERE channel_id = ?", (channel_id,))}
+        """IDs already seen in the channel's uploads playlist."""
+        rows = self._all("SELECT video_id FROM videos WHERE channel_id = ? AND listed = 1", (channel_id,))
+        return {r["video_id"] for r in rows}
 
     def count_videos(self, channel_id: str) -> int:
         return self._one("SELECT COUNT(*) AS n FROM videos WHERE channel_id = ?", (channel_id,))["n"]

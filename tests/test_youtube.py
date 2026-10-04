@@ -138,3 +138,27 @@ def test_parse_chapters():
 
 def test_parse_chapters_needs_two():
     assert parse_chapters("0:00 Only one") == []
+
+
+def test_single_fetched_video_does_not_hide_newer_uploads_on_refresh(store):
+    ids = make_ids(5)
+    fake = FakeYouTube(ids)
+    clock = Clock(T0)
+    client = fake.client(store, now=clock)
+    client.index_channel(YC)
+    fake.video_ids = ["new00000000", "new00000001", "new00000002"] + ids
+    client.fetch_video("new00000001")  # e.g. user pasted a recent video URL
+    clock.now = T0 + timedelta(days=8)
+    client.index_channel(YC)
+    assert {"new00000000", "new00000002"} <= store.known_video_ids(CHANNEL_ID)
+    assert store.count_videos(CHANNEL_ID) == 8
+
+
+def test_refresh_flag_forces_full_pass(store):
+    ids = make_ids(60)
+    fake = FakeYouTube(ids)
+    client = fake.client(store, now=Clock(T0))
+    client.index_channel(YC)
+    fake.calls.clear()
+    client.index_channel(YC, refresh=True)
+    assert fake.calls_to("playlistItems") == 2

@@ -103,3 +103,18 @@ def test_reserve_is_atomic_across_threads(tmp_path):
 
 def test_utc_day():
     assert utc_day(datetime(2026, 10, 4, 23, 59, tzinfo=timezone.utc)) == "2026-10-04"
+
+
+def test_old_database_gains_listed_column(tmp_path):
+    import sqlite3
+    path = tmp_path / "old.db"
+    conn = sqlite3.connect(path)
+    conn.execute("""CREATE TABLE videos (video_id TEXT PRIMARY KEY, channel_id TEXT NOT NULL, title TEXT NOT NULL,
+        description TEXT NOT NULL DEFAULT '', tags_json TEXT NOT NULL DEFAULT '[]', published_at TEXT,
+        duration_s INTEGER NOT NULL DEFAULT 0, view_count INTEGER NOT NULL DEFAULT 0, thumbnail_url TEXT,
+        chapters_json TEXT NOT NULL DEFAULT '[]')""")
+    conn.commit()
+    conn.close()
+    store = Store(path)
+    store.upsert_videos([video("vid00000001")])
+    assert store.known_video_ids(CID) == {"vid00000001"}
