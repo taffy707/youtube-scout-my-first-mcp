@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "yt-scout": {
+      "type": "stdio",
+      "command": "uv",
+      "args": [
+        "run",
+        "--directory",
+        "/Users/Pulse/Desktop/yt=scrap",
+        "yt-scout"
+      ],
+      "env": {}
+    }
+  }
+}
