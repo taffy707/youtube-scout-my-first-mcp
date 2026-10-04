@@ -9,6 +9,7 @@ from yt_scout.errors import ToolError
 VIDEO_ID_RE = re.compile(r"[A-Za-z0-9_-]{11}")
 CHANNEL_ID_RE = re.compile(r"UC[A-Za-z0-9_-]{22}")
 HANDLE_RE = re.compile(r"@[A-Za-z0-9._-]{3,30}")
+PLAYLIST_ID_RE = re.compile(r"(?:PL|UU|LL|FL|OL|RD|UL|PU)[A-Za-z0-9_-]{10,64}")
 MAX_FOCUS = 500
 DETAILS = ("skim", "normal", "high")
 
@@ -78,6 +79,19 @@ def channel(value: str) -> ChannelRef:
     raise InvalidInput("channel", "expected a channel @handle, a UC... channel ID, or a channel URL")
 
 
+def playlist_id(value: str) -> str:
+    raw = (value or "").strip()
+    if PLAYLIST_ID_RE.fullmatch(raw):
+        return raw
+    url = _youtube_url(raw)
+    if url:
+        _, _, query = url
+        candidate = (query.get("list") or [""])[0]
+        if PLAYLIST_ID_RE.fullmatch(candidate):
+            return candidate
+    raise InvalidInput("playlist", "expected a playlist ID (PL...) or a youtube.com/playlist?list=... URL")
+
+
 def time_range(start_s: int | None, end_s: int | None, duration_s: int) -> tuple[int, int]:
     start = 0 if start_s is None else int(start_s)
     if start < 0:
@@ -126,3 +140,7 @@ def limit(value: int | None, default: int = 25, maximum: int = 50) -> int:
 def watch_url(video_id: str, t: int | None = None) -> str:
     url = f"https://www.youtube.com/watch?v={video_id}"
     return url if t is None else f"{url}&t={int(t)}s"
+
+
+def playlist_url(playlist_id: str) -> str:
+    return f"https://www.youtube.com/playlist?list={playlist_id}"

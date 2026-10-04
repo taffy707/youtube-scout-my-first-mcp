@@ -31,7 +31,8 @@ def call(server, name, args=None):
 def test_lists_all_tools():
     tools = asyncio.run(make_server().list_tools())
     assert {t.name for t in tools} == {"index_channel", "search_videos", "get_video_details",
-                                       "get_transcript", "watch_video", "usage_status"}
+                                       "get_transcript", "watch_video", "usage_status",
+                                       "list_playlists", "list_playlist_videos"}
 
 
 def test_instructions_cover_workflow_and_untrusted_content():
@@ -107,3 +108,55 @@ def test_usage_status_shape():
 
 def test_redact():
     assert redact("bad key AIzaXYZ in message", ["AIzaXYZ", ""]) == "bad key [REDACTED] in message"
+
+
+PL = "PL" + "s" * 32
+
+
+def make_playlist_server(n_videos=60, with_youtube=True):
+    store = Store(":memory:")
+    settings = load_settings({"YOUTUBE_API_KEY": API_KEY})
+    ids = make_ids(n_videos)
+    yt = FakeYouTube(ids, playlists={PL: {"title": "Startup School", "description": "Lectures " * 80,
+                                          "video_ids": ids + ["gone0000001"]}})
+    youtube = yt.client(store) if with_youtube else None
+    return build_server(Services(settings, store, youtube, TranscriptFetcher(store, api=FakeTranscriptApi()), None)), ids
+
+
+def test_list_playlists_tool():
+    server, _ = make_playlist_server()
+    out = call(server, "list_playlists", {"channel": "@ycombinator"})
+    assert out["count"] == 1
+    p = out["playlists"][0]
+    assert p["title"] == "Startup School" and p["video_count"] == 61
+    assert len(p["description_snippet"]) <= 300
+    assert p["url"] == f"https://www.youtube.com/playlist?list={PL}"
+
+
+def test_list_playlist_videos_pages_and_skips_unavailable():
+    server, ids = make_playlist_server(60)
+    first = call(server, "list_playlist_videos", {"playlist": f"https://www.youtube.com/playlist?list={PL}"})
+    assert first["title"] == "Startup School" and first["total_videos"] == 61
+    assert [v["video_id"] for v in first["videos"]] == ids[:50]
+    assert first["next_offset"] == 50
+    v = first["videos"][0]
+    assert set(v) == {"video_id", "title", "duration_s", "view_count", "published_at", "url"}
+    second = call(server, "list_playlist_videos", {"playlist": PL, "offset": 50})
+    assert [v["video_id"] for v in second["videos"]] == ids[50:]
+    assert second["skipped_unavailable"] == 1
+    assert second["next_offset"] is None
+
+
+def test_list_playlist_videos_rejects_negative_offset():
+    server, _ = make_playlist_server()
+    assert call(server, "list_playlist_videos", {"playlist": PL, "offset": -1})["error"] == "invalid_input"
+
+
+def test_playlist_tools_need_youtube_key():
+    server, _ = make_playlist_server(with_youtube=False)
+    assert call(server, "list_playlists", {"channel": "@ycombinator"})["error"] == "missing_api_key"
+    assert call(server, "list_playlist_videos", {"playlist": PL})["error"] == "missing_api_key"
+
+
+def test_instructions_mention_playlist_browsing():
+    assert "list_playlists" in INSTRUCTIONS and "list_playlist_videos" in INSTRUCTIONS

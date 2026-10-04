@@ -149,3 +149,18 @@ def test_absolute_timestamps_early_in_video_detected_per_chunk():
     watcher, _, _ = make(FakeAnalyzer(responder))
     result = watcher.watch(VID, "KPIs", 0, 360, "high")
     assert [n["timestamp_s"] for n in result["notes"]] == [185, 200]
+
+
+class Overloaded(Exception):
+    def __init__(self, code):
+        super().__init__(f"{code} UNAVAILABLE")
+        self.code = code
+
+
+@pytest.mark.parametrize("code", [429, 503])
+def test_overload_errors_back_off_longer(code):
+    def responder(cs, ce, attempt):
+        return Overloaded(code) if attempt < 2 else json.dumps({"summary": "ok", "notes": []})
+    watcher, _, sleeps = make(FakeAnalyzer(responder))
+    assert watcher.watch(VID, "KPIs", 0, 120, "normal")["segments_failed"] == []
+    assert sleeps == [5, 20]

@@ -43,13 +43,14 @@ Ask Claude something like:
 
 > Using yt-scout on @ycombinator: I'm building a startup — what KPIs should I focus on at pre-seed?
 
-Claude indexes the channel, searches with several phrasings, shows you a shortlist, reads transcripts, has Gemini watch the key ranges, and answers with links that jump to the right second.
+Claude indexes the channel, searches with several phrasings (and on big channels browses playlist titles, then the titles inside a promising playlist), shows you a shortlist, reads transcripts, has Gemini watch the key ranges, and answers with links that jump to the right second.
 
 ## Tools
 
 | Tool | Cost |
 |---|---|
 | `index_channel` | YouTube quota (~1 unit per 50 videos) |
+| `list_playlists`, `list_playlist_videos` | YouTube quota (~1 unit per 50 playlists / videos; cached 7 days) |
 | `search_videos`, `get_video_details` | free (local) |
 | `get_transcript` | free |
 | `watch_video` | Gemini daily video allowance (`GEMINI_DAILY_VIDEO_SECONDS`, default 7 h) |

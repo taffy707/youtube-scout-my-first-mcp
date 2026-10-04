@@ -8,6 +8,7 @@ from mcp.server.mcpserver import MCPServer
 from yt_scout import search, validate
 from yt_scout.config import Settings, load_settings
 from yt_scout.errors import ToolError
+from yt_scout.validate import InvalidInput
 from yt_scout.gemini import USAGE_KIND, GenaiAnalyzer, Watcher
 from yt_scout.store import Store, utc_day
 from yt_scout.transcripts import TranscriptFetcher
@@ -16,12 +17,16 @@ from yt_scout.youtube import YouTubeClient
 log = logging.getLogger("yt_scout")
 
 YOUTUBE_DAILY_QUOTA = 10000
+PLAYLIST_PAGE = 50
 
 INSTRUCTIONS = """yt-scout researches a YouTube channel to answer the user's question. You (Claude) do the reasoning; these tools fetch data, and Gemini watches video.
 
 Workflow:
 1. index_channel for the channel (cached; refreshes automatically after 7 days).
-2. Run 3-5 search_videos calls with different phrasings of the question. Shortlist 5-8 videos. Tell the user the shortlist with a one-line reason for each, then continue without waiting.
+2. Find candidates, reading titles before anything heavier (progressive disclosure):
+   - Run 3-5 search_videos calls with different phrasings of the question.
+   - On large channels, also browse: list_playlists shows playlist titles; list_playlist_videos shows the video titles inside a promising playlist (50 per page, continue with next_offset).
+   Shortlist 5-8 videos. Tell the user the shortlist with a one-line reason for each, then continue without waiting.
 3. get_transcript for each shortlisted video (long transcripts come in pages: when truncated is true, continue with start_s=next_start_s, or use chapters from get_video_details to read only the relevant part).
 4. Use the transcript to find the passages that matter, then call watch_video on those exact ranges (as long as needed, typically 2-20 minutes) with a specific focus. Use detail="high" where slides, charts, demos or whiteboards carry information.
    - If a video has no transcript (no_captions or transcripts_blocked): watch_video with detail="skim" over the whole video first, then watch the chosen ranges at detail="high".
@@ -118,6 +123,39 @@ def _watch_video(svc: Services, video_id: str, focus: str, start_s, end_s, detai
     return {"title": video["title"], **watcher.watch(vid, clean_focus, start, end, level)}
 
 
+def _list_playlists(svc: Services, channel: str, refresh: bool) -> dict:
+    result = _youtube(svc).list_playlists(validate.channel(channel), refresh=refresh)
+    playlists = [
+        {"playlist_id": p["playlist_id"], "title": p["title"], "description_snippet": search.snippet(p["description"]),
+         "video_count": p["video_count"], "url": validate.playlist_url(p["playlist_id"])}
+        for p in result["playlists"]
+    ]
+    return {"channel": result["channel_title"], "count": len(playlists), "playlists": playlists,
+            "from_cache": result["from_cache"]}
+
+
+def _list_playlist_videos(svc: Services, playlist: str, offset: int, refresh: bool) -> dict:
+    youtube = _youtube(svc)
+    pid = validate.playlist_id(playlist)
+    if offset < 0:
+        raise InvalidInput("offset", "must be 0 or more")
+    result = youtube.playlist_videos(pid, refresh=refresh)
+    ids = result["video_ids"]
+    videos, skipped = [], 0
+    for vid in ids[offset:offset + PLAYLIST_PAGE]:
+        v = svc.store.get_video(vid)
+        if v is None:  # deleted or private video still listed in the playlist
+            skipped += 1
+            continue
+        videos.append({"video_id": vid, "title": v["title"], "duration_s": v["duration_s"],
+                       "view_count": v["view_count"], "published_at": v["published_at"],
+                       "url": validate.watch_url(vid)})
+    next_offset = offset + PLAYLIST_PAGE
+    return {"playlist_id": pid, "title": result["title"], "url": validate.playlist_url(pid),
+            "total_videos": len(ids), "offset": offset, "videos": videos, "skipped_unavailable": skipped,
+            "next_offset": next_offset if next_offset < len(ids) else None, "from_cache": result["from_cache"]}
+
+
 def _usage_status(svc: Services) -> dict:
     day = utc_day()
     cap = svc.settings.daily_video_seconds
@@ -181,6 +219,18 @@ def build_server(svc: Services) -> MCPServer:
         detail: "skim" (fast map of a whole video), "normal", or "high" (slides/charts/demos).
         Costs today's Gemini video allowance (cached repeats are free). Prefer transcript-selected ranges."""
         return await run(_watch_video, video_id, focus, start_s, end_s, detail)
+
+    @server.tool()
+    async def list_playlists(channel: str, refresh: bool = False) -> dict:
+        """Titles, sizes and links of a channel's public playlists. Cheap; cached for 7 days.
+        Use to browse a large channel by topic before opening individual videos."""
+        return await run(_list_playlists, channel, refresh)
+
+    @server.tool()
+    async def list_playlist_videos(playlist: str, offset: int = 0, refresh: bool = False) -> dict:
+        """Video titles in a playlist (ID or URL), in playlist order, 50 per page.
+        When next_offset is not null, call again with offset=next_offset for more."""
+        return await run(_list_playlist_videos, playlist, offset, refresh)
 
     @server.tool()
     async def usage_status() -> dict:

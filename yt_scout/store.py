@@ -52,6 +52,25 @@ CREATE TABLE IF NOT EXISTS watches (
     result_json TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS playlists (
+    playlist_id TEXT PRIMARY KEY,
+    channel_id TEXT NOT NULL,
+    title TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    video_count INTEGER NOT NULL DEFAULT 0,
+    position INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS playlists_channel ON playlists(channel_id);
+CREATE TABLE IF NOT EXISTS playlist_items (
+    playlist_id TEXT NOT NULL,
+    position INTEGER NOT NULL,
+    video_id TEXT NOT NULL,
+    PRIMARY KEY (playlist_id, position)
+);
+CREATE TABLE IF NOT EXISTS fetch_log (
+    key TEXT PRIMARY KEY,
+    fetched_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS usage (
     day TEXT NOT NULL,
     kind TEXT NOT NULL,
@@ -222,6 +241,60 @@ class Store:
     def get_watch(self, cache_key: str) -> dict | None:
         row = self._one("SELECT result_json FROM watches WHERE cache_key = ?", (cache_key,))
         return json.loads(row["result_json"]) if row else None
+
+    # --- playlists ------------------------------------------------------
+    def _mark_fetched(self, key: str, fetched_at: str) -> None:
+        self._conn.execute("INSERT OR REPLACE INTO fetch_log (key, fetched_at) VALUES (?, ?)", (key, fetched_at))
+
+    def get_fetched_at(self, key: str) -> str | None:
+        row = self._one("SELECT fetched_at FROM fetch_log WHERE key = ?", (key,))
+        return row["fetched_at"] if row else None
+
+    def replace_playlists(self, channel_id: str, playlists: list[dict], fetched_at: str) -> None:
+        """Replace a channel's playlist list (dicts: playlist_id, title, description, video_count)."""
+        with self._lock, self._conn:
+            self._conn.execute("DELETE FROM playlists WHERE channel_id = ?", (channel_id,))
+            for position, p in enumerate(playlists):
+                self._conn.execute(
+                    """INSERT OR REPLACE INTO playlists
+                       (playlist_id, channel_id, title, description, video_count, position)
+                       VALUES (?, ?, ?, ?, ?, ?)""",
+                    (p["playlist_id"], channel_id, p["title"], p["description"], p["video_count"], position),
+                )
+            self._mark_fetched(f"playlists:{channel_id}", fetched_at)
+
+    def upsert_playlist(self, playlist: dict) -> None:
+        """Store one playlist's metadata (dict also carries channel_id) without touching its siblings."""
+        self._write(
+            """INSERT INTO playlists (playlist_id, channel_id, title, description, video_count)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(playlist_id) DO UPDATE SET channel_id = excluded.channel_id, title = excluded.title,
+                 description = excluded.description, video_count = excluded.video_count""",
+            (playlist["playlist_id"], playlist["channel_id"], playlist["title"], playlist["description"],
+             playlist["video_count"]),
+        )
+
+    def get_playlists(self, channel_id: str) -> list[dict]:
+        rows = self._all("SELECT * FROM playlists WHERE channel_id = ? ORDER BY position", (channel_id,))
+        return [dict(r) for r in rows]
+
+    def get_playlist(self, playlist_id: str) -> dict | None:
+        row = self._one("SELECT * FROM playlists WHERE playlist_id = ?", (playlist_id,))
+        return dict(row) if row else None
+
+    def replace_playlist_items(self, playlist_id: str, video_ids: list[str], fetched_at: str) -> None:
+        with self._lock, self._conn:
+            self._conn.execute("DELETE FROM playlist_items WHERE playlist_id = ?", (playlist_id,))
+            self._conn.executemany(
+                "INSERT INTO playlist_items (playlist_id, position, video_id) VALUES (?, ?, ?)",
+                [(playlist_id, i, vid) for i, vid in enumerate(video_ids)],
+            )
+            self._mark_fetched(f"playlist:{playlist_id}", fetched_at)
+
+    def get_playlist_items(self, playlist_id: str) -> list[str]:
+        rows = self._all("SELECT video_id FROM playlist_items WHERE playlist_id = ? ORDER BY position",
+                         (playlist_id,))
+        return [r["video_id"] for r in rows]
 
     # --- usage ----------------------------------------------------------
     def get_usage(self, day: str, kind: str) -> int:

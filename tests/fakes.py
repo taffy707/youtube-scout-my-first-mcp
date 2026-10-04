@@ -16,8 +16,11 @@ def make_ids(n: int, prefix: str = "vid") -> list[str]:
 class FakeYouTube:
     """Offline stand-in for the YouTube Data API v3, served through httpx.MockTransport."""
 
-    def __init__(self, video_ids: list[str], quota_fail_after: int | None = None):
+    def __init__(self, video_ids: list[str], quota_fail_after: int | None = None,
+                 playlists: dict[str, dict] | None = None):
         self.video_ids = list(video_ids)  # newest first, like the uploads playlist
+        # playlist_id -> {"title": str, "video_ids": [...]}; IDs not in video_ids act as deleted/private videos
+        self.playlists = playlists or {}
         self.quota_fail_after = quota_fail_after
         self.calls: list[httpx.Request] = []
 
@@ -44,12 +47,28 @@ class FakeYouTube:
                     "contentDetails": {"relatedPlaylists": {"uploads": UPLOADS}},
                 }]})
             return httpx.Response(200, json={"pageInfo": {"totalResults": 0}})
-        if resource == "playlistItems":
-            assert params["playlistId"] == UPLOADS
+        if resource == "playlists":
+            if params.get("channelId") == CHANNEL_ID:
+                wanted = list(self.playlists)
+            else:
+                wanted = [p for p in params.get("id", "").split(",") if p in self.playlists]
             start = int(params.get("pageToken") or 0)
-            page = self.video_ids[start:start + 50]
+            body = {"items": [self._playlist(p) for p in wanted[start:start + 50]]}
+            if start + 50 < len(wanted):
+                body["nextPageToken"] = str(start + 50)
+            return httpx.Response(200, json=body)
+        if resource == "playlistItems":
+            pid = params["playlistId"]
+            if pid == UPLOADS:
+                ids = self.video_ids
+            elif pid in self.playlists:
+                ids = self.playlists[pid]["video_ids"]
+            else:
+                return httpx.Response(404, json={"error": {"errors": [{"reason": "playlistNotFound"}]}})
+            start = int(params.get("pageToken") or 0)
+            page = ids[start:start + 50]
             body = {"items": [{"contentDetails": {"videoId": vid}} for vid in page]}
-            if start + 50 < len(self.video_ids):
+            if start + 50 < len(ids):
                 body["nextPageToken"] = str(start + 50)
             return httpx.Response(200, json=body)
         if resource == "videos":
@@ -57,6 +76,12 @@ class FakeYouTube:
             assert len(wanted) <= 50
             return httpx.Response(200, json={"items": [self._video(v) for v in wanted if v in self.video_ids]})
         return httpx.Response(404, json={"error": {"errors": [{"reason": "notFound"}]}})
+
+    def _playlist(self, pid: str) -> dict:
+        p = self.playlists[pid]
+        return {"id": pid,
+                "snippet": {"channelId": CHANNEL_ID, "title": p["title"], "description": p.get("description", "")},
+                "contentDetails": {"itemCount": len(p["video_ids"])}}
 
     @staticmethod
     def _video(vid: str) -> dict:

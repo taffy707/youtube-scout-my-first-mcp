@@ -16,6 +16,9 @@ from yt_scout.store import Store, utc_day, utc_now
 from yt_scout.validate import watch_url
 
 MIN_TAIL_S = 30
+QUICK_BACKOFF_S = (2, 4)
+OVERLOAD_BACKOFF_S = (5, 20)  # Gemini 429/503 "high demand" needs longer pauses
+OVERLOAD_CODES = (429, 503)
 ABSOLUTE_SLACK_S = 5
 
 
@@ -212,6 +215,7 @@ class Watcher:
         prompt = build_chunk_prompt(focus, cs, ce)
         last_error = "unknown error"
         for attempt in range(self._retries):
+            overloaded = False
             try:
                 parsed = parse_chunk_response(self._analyzer.analyze_clip(url, cs, ce, level, prompt))
                 absolute = looks_absolute([n["t"] for n in parsed["notes"]], cs, ce)
@@ -224,8 +228,10 @@ class Watcher:
                 last_error = "Gemini returned malformed JSON"
             except Exception as exc:  # network/5xx/429 — retryable
                 last_error = f"{type(exc).__name__}: {str(exc)[:200]}"
+                overloaded = getattr(exc, "code", None) in OVERLOAD_CODES
             if attempt < self._retries - 1:
-                self._sleep(2 ** (attempt + 1))
+                schedule = OVERLOAD_BACKOFF_S if overloaded else QUICK_BACKOFF_S
+                self._sleep(schedule[min(attempt, len(schedule) - 1)])
         return {"ok": False, "code": "gemini_error", "reason": f"failed after {self._retries} attempts: {last_error}"}
 
     def _merge_summary(self, focus: str, notes: list[dict], summaries: list[str]) -> str:

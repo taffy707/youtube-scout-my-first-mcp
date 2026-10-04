@@ -24,7 +24,7 @@ def build_fts_query(query: str) -> str | None:
     return " OR ".join(f'"{t}"' for t in terms[:MAX_TERMS])
 
 
-def _snippet(text: str) -> str:
+def snippet(text: str) -> str:
     flat = " ".join(text.split())
     if len(flat) <= SNIPPET_CHARS:
         return flat
@@ -44,7 +44,7 @@ def search_videos(store: Store, channel_id: str, query: str, *, min_duration_s: 
         {
             "video_id": r["video_id"],
             "title": r["title"],
-            "description_snippet": _snippet(r["description"]),
+            "description_snippet": snippet(r["description"]),
             "duration_s": r["duration_s"],
             "view_count": r["view_count"],
             "published_at": r["published_at"],
