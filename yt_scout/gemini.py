@@ -1,7 +1,15 @@
 import hashlib
 import json
 import re
+import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from datetime import datetime
+from typing import Callable, Protocol
+
+from yt_scout.errors import ToolError
+from yt_scout.store import Store, utc_day, utc_now
+from yt_scout.validate import watch_url
 
 MIN_TAIL_S = 30
 ABSOLUTE_SLACK_S = 5
@@ -108,3 +116,108 @@ Notes:
 {lines}
 
 Write a summary of at most 150 words of what these notes say about the research question. Plain text, no preamble."""
+
+
+USAGE_KIND = "gemini_video_s"
+
+
+class GeminiUnavailable(ToolError):
+    """Gemini refused the request; retrying will not help."""
+
+
+class Analyzer(Protocol):
+    def analyze_clip(self, video_url: str, start_s: int, end_s: int, level: DetailLevel, prompt: str) -> str: ...
+
+    def complete_text(self, prompt: str) -> str: ...
+
+
+class Watcher:
+    def __init__(self, store: Store, analyzer: Analyzer, model: str, daily_cap_s: int, chunk_s: int, *,
+                 max_workers: int = 4, max_retries: int = 3, sleep: Callable[[float], None] = time.sleep,
+                 now: Callable[[], datetime] = utc_now):
+        self._store = store
+        self._analyzer = analyzer
+        self._model = model
+        self._cap = daily_cap_s
+        self._chunk_s = chunk_s
+        self._workers = max_workers
+        self._retries = max_retries
+        self._sleep = sleep
+        self._now = now
+
+    def watch(self, video_id: str, focus: str, start_s: int, end_s: int, detail: str) -> dict:
+        level = DETAIL_LEVELS[detail]
+        key = cache_key(video_id, start_s, end_s, detail, focus, self._model)
+        hit = self._store.get_watch(key)
+        if hit is not None:
+            return {**hit, "cached": True, "video_seconds_charged": 0}
+
+        requested = end_s - start_s
+        day = utc_day(self._now())
+        if not self._store.reserve_usage(day, USAGE_KIND, requested, self._cap):
+            remaining = max(0, self._cap - self._store.get_usage(day, USAGE_KIND))
+            return {
+                "error": "budget_exceeded",
+                "message": (f"This watch needs {requested}s of video but only {remaining}s of today's "
+                            f"{self._cap}s Gemini allowance is left. Choose shorter ranges or wait until 00:00 UTC."),
+                "remaining_seconds": remaining,
+            }
+
+        chunks = plan_chunks(start_s, end_s, level.max_chunk_s or self._chunk_s)
+        url = watch_url(video_id)
+        with ThreadPoolExecutor(max_workers=min(self._workers, len(chunks))) as pool:
+            outcomes = list(pool.map(lambda c: self._run_chunk(url, c, level, focus), chunks))
+
+        notes, summaries, failed = [], [], []
+        for (cs, ce), outcome in zip(chunks, outcomes):
+            if outcome["ok"]:
+                notes.extend(outcome["notes"])
+                summaries.append(outcome["summary"])
+            else:
+                failed.append({"start_s": cs, "end_s": ce, "code": outcome["code"], "reason": outcome["reason"]})
+                self._store.add_usage(day, USAGE_KIND, -(ce - cs))
+
+        if len(failed) == len(chunks):
+            codes = {f["code"] for f in failed}
+            code = codes.pop() if len(codes) == 1 and "gemini_error" not in codes else "watch_failed"
+            return {"error": code, "message": "Gemini could not analyse any part of this range.",
+                    "segments_failed": failed}
+
+        notes.sort(key=lambda n: n["t"])
+        shaped = [{"timestamp_s": n["t"], "timestamp": fmt_ts(n["t"]), "observation": n["observation"],
+                   "url": watch_url(video_id, n["t"])} for n in notes]
+        summary = summaries[0] if len(chunks) == 1 else self._merge_summary(focus, shaped, summaries)
+        result = {"video_id": video_id, "start_s": start_s, "end_s": end_s, "detail": detail, "model": self._model,
+                  "summary": summary, "notes": shaped, "segments_failed": failed}
+        if not failed:
+            self._store.put_watch(key, video_id, start_s, end_s, detail, focus, self._model, result,
+                                  self._now().isoformat())
+        charged = requested - sum(f["end_s"] - f["start_s"] for f in failed)
+        return {**result, "cached": False, "video_seconds_charged": charged}
+
+    def _run_chunk(self, url: str, chunk: tuple[int, int], level: DetailLevel, focus: str) -> dict:
+        cs, ce = chunk
+        prompt = build_chunk_prompt(focus, cs, ce)
+        last_error = "unknown error"
+        for attempt in range(self._retries):
+            try:
+                parsed = parse_chunk_response(self._analyzer.analyze_clip(url, cs, ce, level, prompt))
+                notes = [{"t": to_absolute(n["t"], cs, ce), "observation": n["observation"]} for n in parsed["notes"]]
+                return {"ok": True, "notes": notes, "summary": parsed["summary"]}
+            except GeminiUnavailable as exc:
+                return {"ok": False, "code": exc.code, "reason": exc.message}
+            except ValueError:
+                last_error = "Gemini returned malformed JSON"
+            except Exception as exc:  # network/5xx/429 — retryable
+                last_error = f"{type(exc).__name__}: {str(exc)[:200]}"
+            if attempt < self._retries - 1:
+                self._sleep(2 ** (attempt + 1))
+        return {"ok": False, "code": "gemini_error", "reason": f"failed after {self._retries} attempts: {last_error}"}
+
+    def _merge_summary(self, focus: str, notes: list[dict], summaries: list[str]) -> str:
+        if not notes:
+            return "Nothing relevant was found in the watched ranges."
+        try:
+            return self._analyzer.complete_text(build_merge_prompt(focus, notes)).strip()
+        except Exception:
+            return " ".join(s for s in summaries if s)

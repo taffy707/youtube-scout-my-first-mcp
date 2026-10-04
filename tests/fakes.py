@@ -123,3 +123,33 @@ class FakeTranscriptApi:
         if self.error is not None:
             raise self.error
         return FakeTranscriptList(video_id, self.transcripts)
+
+
+import json
+import threading
+
+
+def default_response(cs: int, ce: int, attempt: int) -> str:
+    return json.dumps({"summary": f"clip {cs}-{ce}",
+                       "notes": [{"timestamp": "00:10", "observation": f"point at {cs}+10"}]})
+
+
+class FakeAnalyzer:
+    def __init__(self, responder=None):
+        self.responder = responder or default_response
+        self.calls: list[tuple] = []
+        self.text_calls: list[str] = []
+        self._lock = threading.Lock()
+
+    def analyze_clip(self, video_url, start_s, end_s, level, prompt):
+        with self._lock:
+            attempt = sum(1 for c in self.calls if c[1] == start_s)
+            self.calls.append((video_url, start_s, end_s, level, prompt))
+        result = self.responder(start_s, end_s, attempt)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    def complete_text(self, prompt):
+        self.text_calls.append(prompt)
+        return "merged summary"
