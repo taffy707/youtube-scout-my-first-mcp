@@ -7,6 +7,10 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Callable, Protocol
 
+from google import genai
+from google.genai import errors as genai_errors
+from google.genai import types
+
 from yt_scout.errors import ToolError
 from yt_scout.store import Store, utc_day, utc_now
 from yt_scout.validate import watch_url
@@ -221,3 +225,36 @@ class Watcher:
             return self._analyzer.complete_text(build_merge_prompt(focus, notes)).strip()
         except Exception:
             return " ".join(s for s in summaries if s)
+
+
+class GenaiAnalyzer:
+    """Analyzer backed by the Gemini API. The SDK sends the key as a header, never in the URL."""
+
+    def __init__(self, api_key: str | None, model: str, *, timeout_s: int = 300, client=None):
+        self._model = model
+        self._client = client or genai.Client(api_key=api_key,
+                                              http_options=types.HttpOptions(timeout=timeout_s * 1000))
+
+    def analyze_clip(self, video_url: str, start_s: int, end_s: int, level: DetailLevel, prompt: str) -> str:
+        video = types.Part(
+            file_data=types.FileData(file_uri=video_url),
+            video_metadata=types.VideoMetadata(start_offset=f"{start_s}s", end_offset=f"{end_s}s", fps=level.fps),
+        )
+        config = types.GenerateContentConfig(media_resolution=level.media_resolution,
+                                             response_mime_type="application/json", temperature=0.2)
+        return self._generate([video, types.Part(text=prompt)], config)
+
+    def complete_text(self, prompt: str) -> str:
+        return self._generate([types.Part(text=prompt)], types.GenerateContentConfig(temperature=0.2))
+
+    def _generate(self, parts: list, config) -> str:
+        try:
+            response = self._client.models.generate_content(
+                model=self._model, contents=types.Content(role="user", parts=parts), config=config)
+        except genai_errors.ClientError as exc:
+            if exc.code == 429:
+                raise
+            raise GeminiUnavailable("gemini_rejected",
+                                    f"Gemini rejected the request (HTTP {exc.code}): "
+                                    f"{(getattr(exc, 'message', '') or '')[:200]}") from None
+        return response.text or ""
