@@ -22,7 +22,7 @@ INSTRUCTIONS = """yt-scout researches a YouTube channel to answer the user's que
 Workflow:
 1. index_channel for the channel (cached; refreshes automatically after 7 days).
 2. Run 3-5 search_videos calls with different phrasings of the question. Shortlist 5-8 videos. Tell the user the shortlist with a one-line reason for each, then continue without waiting.
-3. get_transcript for each shortlisted video. Use get_video_details when chapters would help.
+3. get_transcript for each shortlisted video (long transcripts come in pages: when truncated is true, continue with start_s=next_start_s, or use chapters from get_video_details to read only the relevant part).
 4. Use the transcript to find the passages that matter, then call watch_video on those exact ranges (as long as needed, typically 2-20 minutes) with a specific focus. Use detail="high" where slides, charts, demos or whiteboards carry information.
    - If a video has no transcript (no_captions or transcripts_blocked): watch_video with detail="skim" over the whole video first, then watch the chosen ranges at detail="high".
    - Before a batch of watches totalling more than 60 minutes of video, ask the user to confirm. Check usage_status when planning large batches.
@@ -170,6 +170,7 @@ def build_server(svc: Services) -> MCPServer:
     @server.tool()
     async def get_transcript(video_id: str, start_s: int | None = None, end_s: int | None = None) -> dict:
         """Timestamped captions in ~30 s blocks. Free. Optional start_s/end_s limit the range.
+        Long transcripts are paged: if truncated is true, call again with start_s=next_start_s.
         Returns error no_captions or transcripts_blocked when unavailable — then use watch_video."""
         return await run(_get_transcript, video_id, start_s, end_s)
 

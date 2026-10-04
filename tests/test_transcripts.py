@@ -89,3 +89,22 @@ def test_unavailable_video():
     with pytest.raises(TranscriptError) as exc:
         fetcher(FakeTranscriptApi(error=VideoUnavailable(VID))).get(VID)
     assert exc.value.code == "video_unavailable"
+
+
+LONG_RAW = [{"text": "word " * 10, "start": float(i), "duration": 1.0} for i in range(3600)]  # 36k words, 1 h
+
+
+def test_long_transcript_is_paged():
+    f = fetcher(FakeTranscriptApi([FakeTranscript("en", False, LONG_RAW)]))
+    first = f.get(VID)
+    words = sum(len(s["text"].split()) for s in first["segments"])
+    assert first["truncated"] is True
+    assert words <= 12000
+    assert first["next_start_s"] == first["segments"][-1]["end_s"]
+    second = f.get(VID, start_s=first["next_start_s"])
+    assert second["segments"][0]["start_s"] == first["next_start_s"]
+
+
+def test_short_transcript_is_not_truncated():
+    result = fetcher(FakeTranscriptApi([FakeTranscript("en", False, RAW)])).get(VID)
+    assert result["truncated"] is False and result["next_start_s"] is None

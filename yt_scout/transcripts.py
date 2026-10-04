@@ -19,6 +19,7 @@ from yt_scout.store import Store, utc_now
 
 PREFERRED_LANGUAGES = ["en", "en-US", "en-GB"]
 BLOCK_S = 30
+MAX_WORDS = 12000  # keeps one tool result well under Claude Code's MCP output limit
 
 
 class TranscriptError(ToolError):
@@ -71,7 +72,15 @@ class TranscriptFetcher:
             lo = start_s or 0
             hi = end_s if end_s is not None else math.inf
             blocks = [b for b in blocks if b["start_s"] < hi and b["end_s"] > lo]
-        return {"video_id": video_id, "language": row["language"], "source": row["source"], "segments": blocks}
+        page, words = [], 0
+        for block in blocks:
+            words += len(block["text"].split())
+            if page and words > MAX_WORDS:
+                break
+            page.append(block)
+        truncated = len(page) < len(blocks)
+        return {"video_id": video_id, "language": row["language"], "source": row["source"], "segments": page,
+                "truncated": truncated, "next_start_s": blocks[len(page)]["start_s"] if truncated else None}
 
     def _fetch_and_cache(self, video_id: str) -> dict:
         now = self._now().isoformat()
