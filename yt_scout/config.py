@@ -13,6 +13,7 @@ class Settings:
     youtube_api_key: str | None
     gemini_api_key: str | None
     gemini_model: str
+    gemini_skim_model: str | None
     daily_video_seconds: int
     chunk_seconds: int
     db_path: Path
@@ -43,7 +44,8 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
     return Settings(
         youtube_api_key=_key(env, "YOUTUBE_API_KEY"),
         gemini_api_key=_key(env, "GEMINI_API_KEY"),
-        gemini_model=(env.get("GEMINI_MODEL") or "").strip() or "gemini-3.8-flash",
+        gemini_model=(env.get("GEMINI_MODEL") or "").strip() or "gemini-3.7-flash",
+        gemini_skim_model=_key(env, "GEMINI_SKIM_MODEL"),
         daily_video_seconds=_int(env, "GEMINI_DAILY_VIDEO_SECONDS", 25200, 0, 86400),
         chunk_seconds=_int(env, "WATCH_CHUNK_SECONDS", 180, 30, 900),
         db_path=Path((env.get("YT_SCOUT_DB") or "").strip() or "~/.yt-scout/cache.db").expanduser(),

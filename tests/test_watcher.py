@@ -164,3 +164,27 @@ def test_overload_errors_back_off_longer(code):
     watcher, _, sleeps = make(FakeAnalyzer(responder))
     assert watcher.watch(VID, "KPIs", 0, 120, "normal")["segments_failed"] == []
     assert sleeps == [5, 20]
+
+
+def make_with_skim(main, skim):
+    store = Store(":memory:")
+    watcher = Watcher(store, main, "main-model", 25200, 180, sleep=lambda s: None, now=lambda: NOW,
+                      skim_analyzer=skim, skim_model="skim-model")
+    return watcher, store
+
+
+def test_skim_uses_skim_model_and_others_use_main():
+    main, skim = FakeAnalyzer(), FakeAnalyzer()
+    watcher, _ = make_with_skim(main, skim)
+    skimmed = watcher.watch(VID, "KPIs", 0, 600, "skim")
+    detailed = watcher.watch(VID, "KPIs", 0, 120, "high")
+    assert len(skim.calls) == 1 and len(main.calls) == 1
+    assert skimmed["model"] == "skim-model" and detailed["model"] == "main-model"
+
+
+def test_skim_cache_is_keyed_by_skim_model():
+    main, skim = FakeAnalyzer(), FakeAnalyzer()
+    watcher, store = make_with_skim(main, skim)
+    watcher.watch(VID, "KPIs", 0, 600, "skim")
+    plain = Watcher(store, main, "main-model", 25200, 180, sleep=lambda s: None, now=lambda: NOW)
+    assert plain.watch(VID, "KPIs", 0, 600, "skim")["cached"] is False

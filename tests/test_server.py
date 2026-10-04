@@ -160,3 +160,19 @@ def test_playlist_tools_need_youtube_key():
 
 def test_instructions_mention_playlist_browsing():
     assert "list_playlists" in INSTRUCTIONS and "list_playlist_videos" in INSTRUCTIONS
+
+
+def test_build_services_wires_separate_skim_model(tmp_path):
+    from yt_scout.server import build_services
+    settings = load_settings({"GEMINI_API_KEY": "k", "GEMINI_MODEL": "gemini-3.7-flash",
+                              "GEMINI_SKIM_MODEL": "gemini-3.5-flash-lite", "YT_SCOUT_DB": str(tmp_path / "c.db")})
+    watcher = build_services(settings).watcher
+    assert watcher.model_for("skim") == "gemini-3.5-flash-lite"
+    assert watcher.model_for("high") == "gemini-3.7-flash"
+
+
+def test_build_services_without_skim_model_uses_main(tmp_path):
+    from yt_scout.server import build_services
+    settings = load_settings({"GEMINI_API_KEY": "k", "GEMINI_MODEL": "gemini-3.7-flash",
+                              "YT_SCOUT_DB": str(tmp_path / "c.db")})
+    assert build_services(settings).watcher.model_for("skim") == "gemini-3.7-flash"

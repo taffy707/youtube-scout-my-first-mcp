@@ -149,10 +149,13 @@ class Analyzer(Protocol):
 class Watcher:
     def __init__(self, store: Store, analyzer: Analyzer, model: str, daily_cap_s: int, chunk_s: int, *,
                  max_workers: int = 4, max_retries: int = 3, sleep: Callable[[float], None] = time.sleep,
-                 now: Callable[[], datetime] = utc_now):
+                 now: Callable[[], datetime] = utc_now, skim_analyzer: Analyzer | None = None,
+                 skim_model: str | None = None):
         self._store = store
         self._analyzer = analyzer
         self._model = model
+        # Optional cheaper/faster model used only for detail="skim".
+        self._skim = (skim_analyzer, skim_model) if skim_analyzer and skim_model else (analyzer, model)
         self._cap = daily_cap_s
         self._chunk_s = chunk_s
         self._workers = max_workers
@@ -160,9 +163,16 @@ class Watcher:
         self._sleep = sleep
         self._now = now
 
+    def _pick(self, detail: str) -> tuple[Analyzer, str]:
+        return self._skim if detail == "skim" else (self._analyzer, self._model)
+
+    def model_for(self, detail: str) -> str:
+        return self._pick(detail)[1]
+
     def watch(self, video_id: str, focus: str, start_s: int, end_s: int, detail: str) -> dict:
         level = DETAIL_LEVELS[detail]
-        key = cache_key(video_id, start_s, end_s, detail, focus, self._model)
+        analyzer, model = self._pick(detail)
+        key = cache_key(video_id, start_s, end_s, detail, focus, model)
         hit = self._store.get_watch(key)
         if hit is not None:
             return {**hit, "cached": True, "video_seconds_charged": 0}
@@ -181,7 +191,7 @@ class Watcher:
         chunks = plan_chunks(start_s, end_s, level.max_chunk_s or self._chunk_s)
         url = watch_url(video_id)
         with ThreadPoolExecutor(max_workers=min(self._workers, len(chunks))) as pool:
-            outcomes = list(pool.map(lambda c: self._run_chunk(url, c, level, focus), chunks))
+            outcomes = list(pool.map(lambda c: self._run_chunk(analyzer, url, c, level, focus), chunks))
 
         notes, summaries, failed = [], [], []
         for (cs, ce), outcome in zip(chunks, outcomes):
@@ -201,23 +211,23 @@ class Watcher:
         notes.sort(key=lambda n: n["t"])
         shaped = [{"timestamp_s": n["t"], "timestamp": fmt_ts(n["t"]), "observation": n["observation"],
                    "url": watch_url(video_id, n["t"])} for n in notes]
-        summary = summaries[0] if len(chunks) == 1 else self._merge_summary(focus, shaped, summaries)
-        result = {"video_id": video_id, "start_s": start_s, "end_s": end_s, "detail": detail, "model": self._model,
+        summary = summaries[0] if len(chunks) == 1 else self._merge_summary(analyzer, focus, shaped, summaries)
+        result = {"video_id": video_id, "start_s": start_s, "end_s": end_s, "detail": detail, "model": model,
                   "summary": summary, "notes": shaped, "segments_failed": failed}
         if not failed:
-            self._store.put_watch(key, video_id, start_s, end_s, detail, focus, self._model, result,
+            self._store.put_watch(key, video_id, start_s, end_s, detail, focus, model, result,
                                   self._now().isoformat())
         charged = requested - sum(f["end_s"] - f["start_s"] for f in failed)
         return {**result, "cached": False, "video_seconds_charged": charged}
 
-    def _run_chunk(self, url: str, chunk: tuple[int, int], level: DetailLevel, focus: str) -> dict:
+    def _run_chunk(self, analyzer: Analyzer, url: str, chunk: tuple[int, int], level: DetailLevel, focus: str) -> dict:
         cs, ce = chunk
         prompt = build_chunk_prompt(focus, cs, ce)
         last_error = "unknown error"
         for attempt in range(self._retries):
             overloaded = False
             try:
-                parsed = parse_chunk_response(self._analyzer.analyze_clip(url, cs, ce, level, prompt))
+                parsed = parse_chunk_response(analyzer.analyze_clip(url, cs, ce, level, prompt))
                 absolute = looks_absolute([n["t"] for n in parsed["notes"]], cs, ce)
                 notes = [{"t": to_absolute(n["t"], cs, ce, absolute), "observation": n["observation"]}
                          for n in parsed["notes"]]
@@ -234,11 +244,11 @@ class Watcher:
                 self._sleep(schedule[min(attempt, len(schedule) - 1)])
         return {"ok": False, "code": "gemini_error", "reason": f"failed after {self._retries} attempts: {last_error}"}
 
-    def _merge_summary(self, focus: str, notes: list[dict], summaries: list[str]) -> str:
+    def _merge_summary(self, analyzer: Analyzer, focus: str, notes: list[dict], summaries: list[str]) -> str:
         if not notes:
             return "Nothing relevant was found in the watched ranges."
         try:
-            return self._analyzer.complete_text(build_merge_prompt(focus, notes)).strip()
+            return analyzer.complete_text(build_merge_prompt(focus, notes)).strip()
         except Exception:
             return " ".join(s for s in summaries if s)
 

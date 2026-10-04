@@ -150,7 +150,8 @@ All SQL is parameterised. WAL mode enabled.
 |---|---|---|
 | `YOUTUBE_API_KEY` | — (required for indexing) | Restrict key to YouTube Data API v3 in Google Cloud console |
 | `GEMINI_API_KEY` | — (required for watch) | Sent via `x-goog-api-key` header (SDK default), never in URLs or logs |
-| `GEMINI_MODEL` | `gemini-3.8-flash` | Latest stable Flash per Google's models page (checked 2026-10-04); pinned, not an alias; re-verify at build time |
+| `GEMINI_MODEL` | `gemini-3.7-flash` | Chosen by a 2026-10-04 benchmark of 7 available Flash models (3.8 Flash was sparser and missed skim content); pinned, not an alias |
+| `GEMINI_SKIM_MODEL` | — (same as `GEMINI_MODEL`) | Optional model used only for `detail="skim"`; `.env.example` suggests `gemini-3.5-flash-lite` (3–4× faster) |
 | `GEMINI_DAILY_VIDEO_SECONDS` | `25200` (7 h) | Stays under the free-tier 8 h/day YouTube-video limit |
 | `WATCH_CHUNK_SECONDS` | `180` | Max chunk length for `normal`/`high` detail |
 | `YT_SCOUT_DB` | `~/.yt-scout/cache.db` | |

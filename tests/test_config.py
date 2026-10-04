@@ -9,7 +9,7 @@ def test_defaults_when_env_empty():
     s = load_settings({})
     assert s.youtube_api_key is None
     assert s.gemini_api_key is None
-    assert s.gemini_model == "gemini-3.8-flash"
+    assert s.gemini_model == "gemini-3.7-flash"
     assert s.daily_video_seconds == 25200
     assert s.chunk_seconds == 180
     assert s.db_path == Path("~/.yt-scout/cache.db").expanduser()
@@ -45,3 +45,8 @@ def test_blank_key_is_none():
 def test_bad_numbers_rejected(name, value):
     with pytest.raises(ValueError, match=name):
         load_settings({name: value})
+
+
+def test_skim_model_defaults_to_none_and_is_read():
+    assert load_settings({}).gemini_skim_model is None
+    assert load_settings({"GEMINI_SKIM_MODEL": " gemini-3.5-flash-lite "}).gemini_skim_model == "gemini-3.5-flash-lite"

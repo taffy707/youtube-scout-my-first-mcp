@@ -51,8 +51,11 @@ def build_services(settings: Settings) -> Services:
     watcher = None
     if settings.gemini_api_key:
         analyzer = GenaiAnalyzer(settings.gemini_api_key, settings.gemini_model)
+        skim_model = settings.gemini_skim_model
+        skim_analyzer = (GenaiAnalyzer(settings.gemini_api_key, skim_model)
+                         if skim_model and skim_model != settings.gemini_model else None)
         watcher = Watcher(store, analyzer, settings.gemini_model, settings.daily_video_seconds,
-                          settings.chunk_seconds)
+                          settings.chunk_seconds, skim_analyzer=skim_analyzer, skim_model=skim_model)
     return Services(settings, store, youtube, TranscriptFetcher(store), watcher)
 
 

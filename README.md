@@ -56,6 +56,8 @@ Claude indexes the channel, searches with several phrasings (and on big channels
 | `watch_video` | Gemini daily video allowance (`GEMINI_DAILY_VIDEO_SECONDS`, default 7 h) |
 | `usage_status` | free |
 
+Models: `GEMINI_MODEL` (default `gemini-3.7-flash`) handles `normal`/`high`; optional `GEMINI_SKIM_MODEL` (e.g. `gemini-3.5-flash-lite`, 3–4× faster) handles `skim`. In a 2026-10-04 benchmark of Flash models on YC talks, 3.7 Flash and 3.5 Flash gave the best notes; 3.5 Flash-Lite was fastest; all kept timestamps within a few seconds.
+
 `watch_video` detail levels: `skim` (low-res, 0.5 fps, 15-min chunks), `normal` (low-res, 1 fps), `high` (high-res, 2 fps). Ranges are split into `WATCH_CHUNK_SECONDS` (default 180 s) chunks watched in parallel; shorter chunks give more detailed notes.
 
 ## Troubleshooting
