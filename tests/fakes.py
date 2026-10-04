@@ -73,3 +73,53 @@ class FakeYouTube:
             "contentDetails": {"duration": "PT12M5S"},
             "statistics": {"viewCount": "1234"},
         }
+
+
+from types import SimpleNamespace
+
+from youtube_transcript_api import NoTranscriptFound
+
+
+class FakeTranscript:
+    def __init__(self, language_code: str, is_generated: bool, raw: list[dict]):
+        self.language_code = language_code
+        self.is_generated = is_generated
+        self.raw = raw
+
+    def fetch(self):
+        return SimpleNamespace(to_raw_data=lambda: list(self.raw))
+
+
+class FakeTranscriptList:
+    def __init__(self, video_id: str, transcripts: list[FakeTranscript]):
+        self.video_id = video_id
+        self.transcripts = transcripts
+
+    def _find(self, langs, generated: bool):
+        for lang in langs:
+            for t in self.transcripts:
+                if t.language_code == lang and t.is_generated == generated:
+                    return t
+        raise NoTranscriptFound(self.video_id, langs, None)
+
+    def find_manually_created_transcript(self, langs):
+        return self._find(langs, generated=False)
+
+    def find_generated_transcript(self, langs):
+        return self._find(langs, generated=True)
+
+    def __iter__(self):
+        return iter(self.transcripts)
+
+
+class FakeTranscriptApi:
+    def __init__(self, transcripts: list[FakeTranscript] | None = None, error: Exception | None = None):
+        self.transcripts = transcripts or []
+        self.error = error
+        self.list_calls = 0
+
+    def list(self, video_id: str):
+        self.list_calls += 1
+        if self.error is not None:
+            raise self.error
+        return FakeTranscriptList(video_id, self.transcripts)
