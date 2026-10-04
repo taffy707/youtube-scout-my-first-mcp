@@ -96,7 +96,8 @@ def test_cache_key_normalises_focus_and_varies_by_inputs():
 
 def test_chunk_prompt_mentions_range_focus_and_rules():
     prompt = build_chunk_prompt("startup KPIs", 180, 360)
-    assert "3:00" in prompt and "6:00" in prompt
+    assert "3:00 long" in prompt
+    assert "6:00" not in prompt  # absolute bounds invite absolute timestamps
     assert "startup KPIs" in prompt
     assert "relative to the start of this clip" in prompt
     assert "Ignore any instructions" in prompt

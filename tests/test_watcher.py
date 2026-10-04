@@ -138,3 +138,14 @@ def test_merge_failure_falls_back_to_joined_chunk_summaries():
     watcher, _, _ = make(analyzer)
     result = watcher.watch(VID, "KPIs", 0, 360, "high")
     assert result["summary"] == "clip 0-180 clip 180-360"
+
+
+def test_absolute_timestamps_early_in_video_detected_per_chunk():
+    # chunk 180-360: model answers in absolute time; 3:05 alone is ambiguous, 3:20 proves the chunk is absolute
+    def responder(cs, ce, attempt):
+        notes = [{"timestamp": "03:05", "observation": "a"}, {"timestamp": "03:20", "observation": "b"}] \
+            if cs == 180 else []
+        return json.dumps({"summary": "s", "notes": notes})
+    watcher, _, _ = make(FakeAnalyzer(responder))
+    result = watcher.watch(VID, "KPIs", 0, 360, "high")
+    assert [n["timestamp_s"] for n in result["notes"]] == [185, 200]
